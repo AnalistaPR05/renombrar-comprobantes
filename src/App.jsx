@@ -43,9 +43,12 @@ function App() {
   };
 
   const handleDownload = async () => {
-    if (!outputZip) return;
+    if (!outputZip || !selectedFile) return;
 
-    await downloadOutputZip(outputZip);
+    const zipName = selectedFile.name;
+    const outputName = `renombrado-${zipName}`;
+
+    await downloadOutputZip(outputZip, outputName);
   };
 
   const okCount = results.filter((item) => item.status === "OK").length;
