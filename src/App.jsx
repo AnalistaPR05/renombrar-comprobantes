@@ -1,274 +1,392 @@
-import { useState } from "react";
-import { downloadOutputZip, processZipFile } from "./utils/zipProcessor";
+import { useEffect, useMemo, useRef, useState } from 'react'
+import * as XLSX from 'xlsx'
+import { saveAs } from 'file-saver'
+import './App.css'
 
 function App() {
-  const [selectedFile, setSelectedFile] = useState(null);
-  const [outputZip, setOutputZip] = useState(null);
-  const [results, setResults] = useState([]);
-  const [processing, setProcessing] = useState(false);
+  const barcodeInputRef = useRef(null)
 
-  const handleFileChange = (event) => {
-    const file = event.target.files?.[0];
+  const [codigoActual, setCodigoActual] = useState('')
+  const [codigosInventario, setCodigosInventario] = useState([])
+  const [error, setError] = useState('')
+  const [paginaActual, setPaginaActual] = useState(1)
+  const [filasPorPagina, setFilasPorPagina] = useState(10)
 
-    setSelectedFile(file || null);
-    setOutputZip(null);
-    setResults([]);
-  };
+  useEffect(() => {
+    setTimeout(() => {
+      enfocarInput()
+    }, 300)
+  }, [])
 
-  const handleProcess = async () => {
-    if (!selectedFile) {
-      alert("Selecciona un archivo ZIP.");
-      return;
+  const totalUnidades = useMemo(() => {
+    return codigosInventario.reduce((total, item) => {
+      return total + Number(item.cantidad || 0)
+    }, 0)
+  }, [codigosInventario])
+
+  const totalPaginas = useMemo(() => {
+    return Math.max(1, Math.ceil(codigosInventario.length / filasPorPagina))
+  }, [codigosInventario.length, filasPorPagina])
+
+  const codigosPaginados = useMemo(() => {
+    const inicio = (paginaActual - 1) * filasPorPagina
+    const fin = inicio + filasPorPagina
+    return codigosInventario.slice(inicio, fin)
+  }, [codigosInventario, paginaActual, filasPorPagina])
+
+  const leerCodigo = () => {
+    const codigo = String(codigoActual || '').trim()
+
+    if (!codigo) {
+      enfocarInput()
+      return
     }
 
-    const extension = selectedFile.name.split(".").pop().toLowerCase();
+    setCodigosInventario((prev) => {
+      const existente = prev.find((x) => x.codigo === codigo)
 
-    if (extension !== "zip") {
-      alert("Por ahora esta pantalla procesa archivos .zip. El resultado también se genera en .zip.");
-      return;
-    }
+      if (existente) {
+        return prev.map((item) =>
+          item.codigo === codigo
+            ? { ...item, cantidad: item.cantidad + 1 }
+            : item
+        )
+      }
 
+      return [
+        {
+          codigo,
+          cantidad: 1,
+        },
+        ...prev,
+      ]
+    })
+
+    setPaginaActual(1)
+    setError('')
+    setCodigoActual('')
+    enfocarInput()
+  }
+
+  const incrementarCantidad = (codigo) => {
+    setCodigosInventario((prev) =>
+      prev.map((item) =>
+        item.codigo === codigo
+          ? { ...item, cantidad: item.cantidad + 1 }
+          : item
+      )
+    )
+
+    enfocarInput()
+  }
+
+  const decrementarCantidad = (codigo) => {
+    setCodigosInventario((prev) =>
+      prev.map((item) =>
+        item.codigo === codigo && item.cantidad > 1
+          ? { ...item, cantidad: item.cantidad - 1 }
+          : item
+      )
+    )
+
+    enfocarInput()
+  }
+
+  const cambiarCantidad = (codigo, value) => {
+    const cantidad = Number(value)
+
+    const nuevaCantidad =
+      Number.isNaN(cantidad) || cantidad < 1
+        ? 1
+        : Math.floor(cantidad)
+
+    setCodigosInventario((prev) =>
+      prev.map((item) =>
+        item.codigo === codigo
+          ? { ...item, cantidad: nuevaCantidad }
+          : item
+      )
+    )
+
+    enfocarInput()
+  }
+
+  const eliminarCodigo = (codigo) => {
+    setCodigosInventario((prev) => prev.filter((x) => x.codigo !== codigo))
+    enfocarInput()
+  }
+
+  const limpiarTodo = () => {
+    setCodigosInventario([])
+    setCodigoActual('')
+    setError('')
+    setPaginaActual(1)
+    enfocarInput()
+  }
+
+  const exportarExcel = () => {
     try {
-      setProcessing(true);
+      if (!codigosInventario || codigosInventario.length === 0) {
+        setError('No hay códigos para exportar')
+        enfocarInput()
+        return
+      }
 
-      const response = await processZipFile(selectedFile);
+      const data = codigosInventario.map((item) => ({
+        codigo: item.codigo,
+        cantidad: Number(item.cantidad || 0),
+      }))
 
-      setOutputZip(response.outputZip);
-      setResults(response.results);
-    } catch (error) {
-      alert(`Error al procesar el ZIP: ${error.message}`);
-    } finally {
-      setProcessing(false);
+      const worksheet = XLSX.utils.json_to_sheet(data, {
+        header: ['codigo', 'cantidad'],
+      })
+
+      const workbook = {
+        Sheets: {
+          Inventario: worksheet,
+        },
+        SheetNames: ['Inventario'],
+      }
+
+      const excelBuffer = XLSX.write(workbook, {
+        bookType: 'xlsx',
+        type: 'array',
+      })
+
+      const blob = new Blob([excelBuffer], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;charset=UTF-8',
+      })
+
+      saveAs(blob, `inventario-codigos-${formatearFechaArchivo()}.xlsx`)
+
+      setError('')
+      enfocarInput()
+    } catch (e) {
+      setError('Ocurrió un error al exportar el archivo Excel')
+      enfocarInput()
     }
-  };
+  }
 
-  const handleDownload = async () => {
-    if (!outputZip || !selectedFile) return;
+  const enfocarInput = () => {
+    setTimeout(() => {
+      if (barcodeInputRef.current) {
+        barcodeInputRef.current.focus()
+      }
+    }, 100)
+  }
 
-    const zipName = selectedFile.name;
-    const outputName = `renombrado-${zipName}`;
+  const formatearFechaArchivo = () => {
+    const fecha = new Date()
 
-    await downloadOutputZip(outputZip, outputName);
-  };
+    const yyyy = fecha.getFullYear()
+    const mm = String(fecha.getMonth() + 1).padStart(2, '0')
+    const dd = String(fecha.getDate()).padStart(2, '0')
+    const hh = String(fecha.getHours()).padStart(2, '0')
+    const mi = String(fecha.getMinutes()).padStart(2, '0')
 
-  const okCount = results.filter((item) => item.status === "OK").length;
-  const errorCount = results.filter((item) => item.status === "ERROR").length;
-  const omittedCount = results.filter((item) => item.status === "OMITIDO").length;
+    return `${yyyy}${mm}${dd}-${hh}${mi}`
+  }
+
+  const cambiarFilasPorPagina = (event) => {
+    setFilasPorPagina(Number(event.target.value))
+    setPaginaActual(1)
+    enfocarInput()
+  }
+
+  const irPaginaAnterior = () => {
+    setPaginaActual((prev) => Math.max(1, prev - 1))
+    enfocarInput()
+  }
+
+  const irPaginaSiguiente = () => {
+    setPaginaActual((prev) => Math.min(totalPaginas, prev + 1))
+    enfocarInput()
+  }
 
   return (
-    <main style={styles.page}>
-      <section style={styles.card}>
-        <h1 style={styles.title}>Renombrar comprobantes desde ZIP</h1>
-
-        <p style={styles.description}>
-          Sube un archivo ZIP con comprobantes XML o PDF. El sistema leerá cada archivo
-          y generará un nuevo ZIP con los nombres cambiados.
-        </p>
-
-        <div style={styles.uploadBox}>
-          <input
-            type="file"
-            accept=".zip,.rar"
-            onChange={handleFileChange}
-          />
-
-          {selectedFile && (
-            <p style={styles.fileName}>
-              Archivo seleccionado: <strong>{selectedFile.name}</strong>
-            </p>
-          )}
+    <div className="inventario-page">
+      <div className="inventario-header">
+        <div className="title-block">
+          <h2>Toma de Inventario</h2>
+          <p>Escanea códigos de barras y acumula cantidades automáticamente</p>
         </div>
+      </div>
 
-        <div style={styles.actions}>
-          <button
-            style={styles.primaryButton}
-            onClick={handleProcess}
-            disabled={processing}
-          >
-            {processing ? "Procesando..." : "Procesar archivo"}
-          </button>
+      <div className="inventario-panel">
+        <div className="form-row">
+          <div className="input-container">
+            <label className="inventario-label" htmlFor="barcodeInput">
+              Código de barras
+            </label>
 
-          <button
-            style={{
-              ...styles.secondaryButton,
-              opacity: outputZip ? 1 : 0.5,
-              cursor: outputZip ? "pointer" : "not-allowed",
-            }}
-            onClick={handleDownload}
-            disabled={!outputZip}
-          >
-            Descargar ZIP renombrado
-          </button>
-        </div>
+            <input
+              ref={barcodeInputRef}
+              id="barcodeInput"
+              type="text"
+              className="inventario-input"
+              value={codigoActual}
+              placeholder="Escanea o ingresa el código"
+              autoComplete="off"
+              onChange={(e) => setCodigoActual(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  leerCodigo()
+                }
+              }}
+            />
 
-        {results.length > 0 && (
-          <>
-            <div style={styles.summary}>
-              <div style={styles.summaryItem}>
-                <strong>{okCount}</strong>
-                <span>Renombrados</span>
-              </div>
+            <small className="inventario-help">
+              Escanea el código y presiona Enter. Si el código ya existe, se suma la cantidad.
+            </small>
+          </div>
 
-              <div style={styles.summaryItem}>
-                <strong>{errorCount}</strong>
-                <span>Errores</span>
-              </div>
-
-              <div style={styles.summaryItem}>
-                <strong>{omittedCount}</strong>
-                <span>Omitidos</span>
-              </div>
+          <div className="resumen-container">
+            <div className="resumen-box">
+              <span className="resumen-label">Códigos</span>
+              <span className="resumen-value">{codigosInventario.length}</span>
             </div>
 
-            <table style={styles.table}>
-              <thead>
-                <tr>
-                  <th style={styles.th}>Archivo original</th>
-                  <th style={styles.th}>Nuevo nombre</th>
-                  <th style={styles.th}>Estado</th>
-                  <th style={styles.th}>Detalle</th>
-                </tr>
-              </thead>
+            <div className="resumen-box success">
+              <span className="resumen-label">Unidades</span>
+              <span className="resumen-value">{totalUnidades}</span>
+            </div>
+          </div>
+        </div>
 
-              <tbody>
-                {results.map((item, index) => (
-                  <tr key={`${item.originalName}-${index}`}>
-                    <td style={styles.td}>{item.originalName}</td>
-                    <td style={styles.td}>{item.newName}</td>
-                    <td style={styles.td}>
-                      <span style={getStatusStyle(item.status)}>
-                        {item.status}
-                      </span>
+        <div className="button-row">
+          <button type="button" className="btn btn-success" onClick={leerCodigo}>
+            <span>+</span>
+            Agregar
+          </button>
+
+          <button type="button" className="btn btn-help" onClick={exportarExcel}>
+            <span>📄</span>
+            Exportar Excel
+          </button>
+        </div>
+
+        {error && <div className="error-box">{error}</div>}
+      </div>
+
+      <div className="inventario-panel">
+        <div className="table-wrapper">
+          <table className="inventario-table">
+            <thead>
+              <tr>
+                <th style={{ width: '10%' }}>#</th>
+                <th style={{ width: '45%' }}>CÓDIGO</th>
+                <th style={{ width: '25%' }}>CANTIDAD</th>
+                <th style={{ width: '20%' }}>ACCIONES</th>
+              </tr>
+            </thead>
+
+            <tbody>
+              {codigosPaginados.length > 0 ? (
+                codigosPaginados.map((item, index) => (
+                  <tr key={item.codigo}>
+                    <td>{(paginaActual - 1) * filasPorPagina + index + 1}</td>
+
+                    <td>
+                      <span className="ean-chip">{item.codigo}</span>
                     </td>
-                    <td style={styles.td}>{item.message}</td>
+
+                    <td>
+                      <div className="cantidad-actions">
+                        <button
+                          type="button"
+                          className="icon-btn"
+                          onClick={() => decrementarCantidad(item.codigo)}
+                          disabled={item.cantidad <= 1}
+                        >
+                          −
+                        </button>
+
+                        <input
+                          type="number"
+                          min="1"
+                          className="cantidad-input"
+                          value={item.cantidad}
+                          onChange={(e) =>
+                            cambiarCantidad(item.codigo, e.target.value)
+                          }
+                        />
+
+                        <button
+                          type="button"
+                          className="icon-btn success"
+                          onClick={() => incrementarCantidad(item.codigo)}
+                        >
+                          +
+                        </button>
+                      </div>
+                    </td>
+
+                    <td className="text-center">
+                      <button
+                        type="button"
+                        className="icon-btn danger"
+                        onClick={() => eliminarCodigo(item.codigo)}
+                      >
+                        🗑
+                      </button>
+                    </td>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan="4">
+                    <div className="empty-state">
+                      <div className="empty-title">No hay códigos agregados</div>
+                      <div className="empty-subtitle">
+                        Escanea un código de barras para iniciar la toma de inventario
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {codigosInventario.length > 0 && (
+          <div className="pagination-row">
+            <div className="rows-select">
+              <span>Filas:</span>
+              <select value={filasPorPagina} onChange={cambiarFilasPorPagina}>
+                <option value={10}>10</option>
+                <option value={20}>20</option>
+                <option value={50}>50</option>
+              </select>
+            </div>
+
+            <div className="pagination-actions">
+              <button
+                type="button"
+                className="page-btn"
+                onClick={irPaginaAnterior}
+                disabled={paginaActual === 1}
+              >
+                Anterior
+              </button>
+
+              <span>
+                Página {paginaActual} de {totalPaginas}
+              </span>
+
+              <button
+                type="button"
+                className="page-btn"
+                onClick={irPaginaSiguiente}
+                disabled={paginaActual === totalPaginas}
+              >
+                Siguiente
+              </button>
+            </div>
+          </div>
         )}
-      </section>
-    </main>
-  );
+      </div>
+    </div>
+  )
 }
 
-const styles = {
-  page: {
-    minHeight: "100vh",
-    background: "#f3f4f6",
-    padding: "40px",
-    fontFamily: "Arial, sans-serif",
-  },
-  card: {
-    maxWidth: "1100px",
-    margin: "0 auto",
-    background: "#fff",
-    borderRadius: "14px",
-    padding: "28px",
-    boxShadow: "0 10px 25px rgba(0,0,0,0.08)",
-  },
-  title: {
-    margin: 0,
-    fontSize: "28px",
-  },
-  description: {
-    color: "#555",
-    marginTop: "10px",
-  },
-  uploadBox: {
-    marginTop: "24px",
-    padding: "20px",
-    border: "2px dashed #cbd5e1",
-    borderRadius: "12px",
-    background: "#f8fafc",
-  },
-  fileName: {
-    marginTop: "12px",
-  },
-  actions: {
-    display: "flex",
-    gap: "12px",
-    marginTop: "20px",
-  },
-  primaryButton: {
-    padding: "10px 18px",
-    border: "none",
-    borderRadius: "8px",
-    background: "#2563eb",
-    color: "#fff",
-    fontWeight: "bold",
-    cursor: "pointer",
-  },
-  secondaryButton: {
-    padding: "10px 18px",
-    border: "1px solid #2563eb",
-    borderRadius: "8px",
-    background: "#fff",
-    color: "#2563eb",
-    fontWeight: "bold",
-  },
-  summary: {
-    display: "flex",
-    gap: "14px",
-    marginTop: "24px",
-  },
-  summaryItem: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "4px",
-    minWidth: "130px",
-    padding: "14px",
-    borderRadius: "10px",
-    background: "#f8fafc",
-    border: "1px solid #e2e8f0",
-  },
-  table: {
-    width: "100%",
-    borderCollapse: "collapse",
-    marginTop: "24px",
-  },
-  th: {
-    background: "#f1f5f9",
-    textAlign: "left",
-    padding: "10px",
-    border: "1px solid #e2e8f0",
-  },
-  td: {
-    padding: "10px",
-    border: "1px solid #e2e8f0",
-    fontSize: "14px",
-  },
-};
-
-function getStatusStyle(status) {
-  const base = {
-    padding: "4px 8px",
-    borderRadius: "999px",
-    fontSize: "12px",
-    fontWeight: "bold",
-  };
-
-  if (status === "OK") {
-    return {
-      ...base,
-      background: "#dcfce7",
-      color: "#166534",
-    };
-  }
-
-  if (status === "ERROR") {
-    return {
-      ...base,
-      background: "#fee2e2",
-      color: "#991b1b",
-    };
-  }
-
-  return {
-    ...base,
-    background: "#e5e7eb",
-    color: "#374151",
-  };
-}
-
-export default App;
+export default App
